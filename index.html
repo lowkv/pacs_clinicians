@@ -676,27 +676,45 @@ function log(msg, type='info') {
 // ===== RENDER INTO HIDDEN DIV → CANVAS → PDF PAGE =====
 async function renderToPdf(htmlContent, paddingMm = 14) {
   const { jsPDF } = window.jspdf;
-  const container = document.createElement('div');
-  container.style.cssText = `position:fixed;left:-9999px;top:0;width:${210 - paddingMm*2}mm;background:white;padding:0;margin:0;`;
-  container.innerHTML = htmlContent;
-  document.body.appendChild(container);
-
-  const canvas = await html2canvas(container, {
-    scale: 2, useCORS: true, backgroundColor: '#ffffff',
-    width: container.scrollWidth, height: container.scrollHeight, logging: false,
-  });
-  document.body.removeChild(container);
-
   const pdf  = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
   const pdfW = 210 - paddingMm * 2;
-  const pdfH = (canvas.height * pdfW) / canvas.width;
   const pageH = 297 - paddingMm * 2;
 
+  // Array of page HTML strings (roster)
+  if (Array.isArray(htmlContent)) {
+    for (let i = 0; i < htmlContent.length; i++) {
+      const wrap = document.createElement('div');
+      wrap.style.cssText = `position:fixed;left:-9999px;top:0;width:${pdfW}mm;background:white;padding:0;margin:0;`;
+      wrap.innerHTML = htmlContent[i];
+      document.body.appendChild(wrap);
+      const canvas = await html2canvas(wrap, {
+        scale: 2, useCORS: true, backgroundColor: '#ffffff',
+        width: wrap.scrollWidth, height: wrap.scrollHeight, logging: false,
+      });
+      document.body.removeChild(wrap);
+      const imgH = (canvas.height * pdfW) / canvas.width;
+      if (i > 0) pdf.addPage();
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', paddingMm, paddingMm, pdfW, imgH);
+    }
+    return pdf;
+  }
+
+  // Single HTML (PACS) — render once, auto-paginate
+  const wrap = document.createElement('div');
+  wrap.style.cssText = `position:fixed;left:-9999px;top:0;width:${pdfW}mm;background:white;padding:0;margin:0;`;
+  wrap.innerHTML = htmlContent;
+  document.body.appendChild(wrap);
+  const canvas = await html2canvas(wrap, {
+    scale: 2, useCORS: true, backgroundColor: '#ffffff',
+    width: wrap.scrollWidth, height: wrap.scrollHeight, logging: false,
+  });
+  document.body.removeChild(wrap);
   const imgData = canvas.toDataURL('image/jpeg', 0.95);
-  let rendered = 0;
-  while (rendered < pdfH) {
+  const imgH    = (canvas.height * pdfW) / canvas.width;
+  let rendered  = 0;
+  while (rendered < imgH) {
     if (rendered > 0) pdf.addPage();
-    pdf.addImage(imgData, 'JPEG', paddingMm, paddingMm - rendered, pdfW, pdfH);
+    pdf.addImage(imgData, 'JPEG', paddingMm, paddingMm - rendered, pdfW, imgH);
     rendered += pageH;
   }
   return pdf;
@@ -711,7 +729,7 @@ function buildPacsHtml(row) {
   const sugg     = getVal('Suggestions', row);
   const today    = new Date().toLocaleDateString('en-GB');
 
-  const thStyle = 'padding:4px 6px;border:1.5px solid #333;font-size:9pt;font-weight:normal;text-align:center;background:#333;color:#fff;';
+  const thStyle = 'padding:4px 6px;border:1px solid #333;font-size:9pt;font-weight:bold;text-align:center;background:none;color:#000;';
   const tdStyle = 'padding:3px 6px;border:1px solid #999;font-size:9pt;';
   const tdCStyle = 'padding:3px 4px;border:1px solid #999;font-size:10pt;text-align:center;';
   const secStyle = 'background:#ddd;padding:3px 6px;font-weight:bold;border:1px solid #999;font-size:9pt;';
@@ -766,39 +784,30 @@ function buildPacsHtml(row) {
 
 // ===== BUILD ROSTER HTML =====
 function buildRosterHtml(rows) {
-  const hospital = (() => { const c=mapping['Hospital']||COLUMN_MAP['Hospital']; return c?(rows[0][c]||''):''; })();
-  const dateStr  = formatDates(rows);
-  const nameCol  = mapping['EvaluatorName']     || COLUMN_MAP['EvaluatorName'];
-  const posCol   = mapping['EvaluatorPosition'] || COLUMN_MAP['EvaluatorPosition'];
-  const deptCol  = mapping['Department']        || COLUMN_MAP['Department'];
+  const hospitalCol = mapping['Hospital']          || COLUMN_MAP['Hospital'];
+  const hospital    = hospitalCol ? (rows[0][hospitalCol] || '') : '';
+  const dateStr     = formatDates(rows);
+  const nameCol     = mapping['EvaluatorName']     || COLUMN_MAP['EvaluatorName'];
+  const posCol      = mapping['EvaluatorPosition'] || COLUMN_MAP['EvaluatorPosition'];
+  const deptCol     = mapping['Department']        || COLUMN_MAP['Department'];
 
-  // Data rows with border
-  const dataRows = rows.map((r,i)=>`
-    <tr>
-      <td style="text-align:center;padding:4px 2px;border:1px solid #000;font-size:9pt;">${i+1}</td>
-      <td style="padding:4px 5px;border:1px solid #000;font-size:9pt;">${nameCol?(r[nameCol]||''):''}</td>
-      <td style="padding:4px 5px;border:1px solid #000;font-size:9pt;">${posCol?(r[posCol]||''):''}</td>
-      <td style="padding:4px 5px;border:1px solid #000;font-size:9pt;">${deptCol?(r[deptCol]||''):''}</td>
-      <td style="padding:4px 2px;border:1px solid #000;font-size:9pt;"></td>
-    </tr>`).join('');
+  const PAD_MM  = 14;  // page margin top/bottom same as header padding
+  const PAGE_MM = 297 - PAD_MM * 2;  // usable height per page in mm
+  const PAGE_W  = 210 - PAD_MM * 2;  // content width
 
-  // Blank pad rows — NO border, just height
-  let padRows = '';
-  for (let i=rows.length; i<20; i++) {
-    padRows += `<tr><td colspan="5" style="height:8mm;border:none;"></td></tr>`;
-  }
-
-  // Header cell style — NO background
-  const thS = 'padding:3px 4px;border:1px solid #000;font-size:10pt;font-weight:normal;text-align:center;background:none;color:#000;';
-  const th2S= 'padding:2px 4px;border:1px solid #000;font-size:8pt;font-weight:normal;text-align:center;font-family:Arial,sans-serif;background:none;color:#000;';
   const uS  = 'display:inline-block;border-bottom:1px solid #000;padding-left:2mm;';
+  const thS = 'padding:3px 4px;border:1px solid #000;font-size:10pt;font-weight:normal;text-align:center;';
+  const th2S= 'padding:2px 4px;border:1px solid #000;font-size:8pt;font-weight:normal;text-align:center;font-family:Arial,sans-serif;';
+  const tdS = 'padding:5px 5px;border:1px solid #000;font-size:9pt;line-height:1.35;word-break:break-word;';
+  const tdCS= 'text-align:center;padding:5px 2px;border:1px solid #000;font-size:9pt;';
 
-  return `<div style="font-family:'Sarabun','TH Sarabun New',sans-serif;font-size:11pt;color:#000;background:#fff;width:182mm;padding:0;margin:0;">
-    <!-- HEADER -->
-    <table style="width:100%;border-collapse:collapse;margin-bottom:5mm;">
+  const logoSrc = `data:image/png;base64,${LOGO_B64}`;
+
+  const headerBlock = `
+    <table style="width:100%;border-collapse:collapse;margin-bottom:5mm;flex-shrink:0;">
       <tr>
         <td style="width:34mm;vertical-align:middle;border:none;padding:0;">
-          <img src="data:image/png;base64,LOGO_PLACEHOLDER" style="width:30mm;height:auto;display:block;">
+          <img src="${logoSrc}" style="width:30mm;height:auto;display:block;">
         </td>
         <td style="text-align:center;vertical-align:middle;border:none;padding:0;">
           <div style="font-family:Arial,sans-serif;font-weight:bold;font-style:italic;font-size:13pt;margin-bottom:1mm;">Thai GL Co.,Ltd.</div>
@@ -807,9 +816,10 @@ function buildRosterHtml(rows) {
         </td>
         <td style="width:34mm;border:none;"></td>
       </tr>
-    </table>
-    <!-- INFO BOX -->
-    <div style="border:1px solid #000;padding:4mm;margin-bottom:5mm;">
+    </table>`;
+
+  const infoBlock = `
+    <div style="border:1px solid #000;padding:4mm;margin-bottom:5mm;flex-shrink:0;">
       <div style="margin-bottom:4mm;">
         <span style="font-weight:bold;font-family:Arial,sans-serif;">Hospital Name :</span>&nbsp;<span style="${uS}min-width:130mm;">${hospital}</span>
       </div>
@@ -817,32 +827,116 @@ function buildRosterHtml(rows) {
         <div style="flex:1;">เรื่อง&nbsp;<span style="${uS}min-width:82mm;">Training INFINITT pacs</span></div>
         <div><span style="font-weight:bold;">วันที่ :</span>&nbsp;<span style="${uS}min-width:48mm;">${dateStr}</span></div>
       </div>
-    </div>
-    <!-- TABLE -->
-    <table style="width:100%;border-collapse:collapse;">
-      <thead>
-        <tr>
-          <th style="${thS}width:9%">ลำดับ</th>
-          <th style="${thS}width:26%">ชื่อ-นามสกุล</th>
-          <th style="${thS}width:20%">ตำแหน่ง</th>
-          <th style="${thS}width:17%">ฝ่าย</th>
-          <th style="${thS}width:28%">ลงนามเข้าร่วมอบรม</th>
-        </tr>
-        <tr>
-          <th style="${th2S}">NO.</th>
-          <th style="${th2S}">NAME</th>
-          <th style="${th2S}">POSITION</th>
-          <th style="${th2S}">Department</th>
-          <th style="${th2S}">SIGN FOR PARTICAPATE</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${dataRows}
-        ${padRows}
-      </tbody>
-    </table>
-  </div>`;
+    </div>`;
+
+  const tableHeaderHtml = `
+    <thead>
+      <tr>
+        <th style="${thS}width:9%">ลำดับ</th>
+        <th style="${thS}width:26%">ชื่อ-นามสกุล</th>
+        <th style="${thS}width:20%">ตำแหน่ง</th>
+        <th style="${thS}width:17%">ฝ่าย</th>
+        <th style="${thS}width:28%">ลงนามเข้าร่วมอบรม</th>
+      </tr>
+      <tr>
+        <th style="${th2S}">NO.</th>
+        <th style="${th2S}">NAME</th>
+        <th style="${th2S}">POSITION</th>
+        <th style="${th2S}">Department</th>
+        <th style="${th2S}">SIGN FOR PARTICAPATE</th>
+      </tr>
+    </thead>`;
+
+  function makeRow(r, idx) {
+    const name = nameCol ? (r[nameCol] || '') : '';
+    const pos  = posCol  ? (r[posCol]  || '') : '';
+    const dept = deptCol ? (r[deptCol] || '') : '';
+    return `<tr data-row="${idx}">
+      <td style="${tdCS}">${idx+1}</td>
+      <td style="${tdS}">${name}</td>
+      <td style="${tdS}">${pos}</td>
+      <td style="${tdS}">${dept}</td>
+      <td style="border:1px solid #000;padding:5px 2px;"></td>
+    </tr>`;
+  }
+
+  return new Promise(async (resolve) => {
+    // ── Step 1: render everything into one hidden container to measure row heights ──
+    const probe = document.createElement('div');
+    probe.style.cssText = `position:fixed;left:-9999px;top:0;width:${PAGE_W}mm;` +
+      `font-family:'Sarabun','TH Sarabun New',sans-serif;background:white;padding:0;margin:0;`;
+    probe.innerHTML = headerBlock + infoBlock +
+      `<table style="width:100%;border-collapse:collapse;" id="probeTable">
+        ${tableHeaderHtml}
+        <tbody>${rows.map((r,i)=>makeRow(r,i)).join('')}</tbody>
+      </table>`;
+    document.body.appendChild(probe);
+
+    // Wait a tick for layout
+    await new Promise(r => setTimeout(r, 50));
+
+    // Measure heights in px, convert to mm
+    const PX_PER_MM = probe.offsetWidth / PAGE_W;
+    const headerH_mm = (probe.querySelector('table').previousElementSibling
+      ? probe.querySelector('div').previousElementSibling
+        ? (probe.querySelector('table:first-of-type').offsetTop) / PX_PER_MM
+        : 0
+      : 0);
+
+    // Measure header+info combined height
+    const headerEl = probe.querySelector('table:first-of-type');
+    const infoEl   = probe.querySelector('div');
+    const tableEl  = probe.querySelector('#probeTable');
+    const fixedH_mm = tableEl.offsetTop / PX_PER_MM;  // header+info height in mm
+
+    // Measure each data row height
+    const rowEls = probe.querySelectorAll('#probeTable tbody tr');
+    const rowHeights = Array.from(rowEls).map(el => el.offsetHeight / PX_PER_MM);
+
+    // Measure table header height (th rows)
+    const theadH_mm = probe.querySelector('#probeTable thead').offsetHeight / PX_PER_MM;
+
+    document.body.removeChild(probe);
+
+    // ── Step 2: split rows into pages based on available height ──
+    const pages = [];  // each page = array of row indices
+    let currentPage = [];
+    let usedH = fixedH_mm + theadH_mm;  // fixed content + table header
+    const safeH = PAGE_MM - PAD_MM;  // leave PAD_MM bottom margin
+
+    for (let i = 0; i < rows.length; i++) {
+      const rh = rowHeights[i] || 8;
+      if (usedH + rh > safeH && currentPage.length > 0) {
+        // Flush current page, start new
+        pages.push(currentPage);
+        currentPage = [];
+        usedH = fixedH_mm + theadH_mm;
+      }
+      currentPage.push(i);
+      usedH += rh;
+    }
+    if (currentPage.length > 0) pages.push(currentPage);
+    if (pages.length === 0) pages.push([]);
+
+    // ── Step 3: build HTML string for each page ──
+    const baseStyle = `font-family:'Sarabun','TH Sarabun New',sans-serif;color:#000;background:#fff;width:${PAGE_W}mm;padding:0;margin:0;padding-bottom:${PAD_MM}mm;`;
+
+    const pageHtmls = pages.map(idxArr => {
+      const dataRows = idxArr.map(i => makeRow(rows[i], i)).join('');
+      return `<div style="${baseStyle}">
+        ${headerBlock}
+        ${infoBlock}
+        <table style="width:100%;border-collapse:collapse;">
+          ${tableHeaderHtml}
+          <tbody>${dataRows}</tbody>
+        </table>
+      </div>`;
+    });
+
+    resolve(pageHtmls);
+  });
 }
+
 
 // ===== AUTO-MATCH COLUMNS =====
 function autoMatch(label) {
@@ -950,8 +1044,8 @@ async function generateRoster() {
   try {
     document.getElementById('progressFill').style.width='40%';
     document.getElementById('progressText').textContent='กำลังสร้างใบรายชื่อ...';
-    const html = buildRosterHtml(excelData).replace('LOGO_PLACEHOLDER', LOGO_B64);
-    const pdf  = await renderToPdf(html, 14);
+    const pageHtmls = await buildRosterHtml(excelData);
+    const pdf  = await renderToPdf(pageHtmls, 14);
     document.getElementById('progressFill').style.width='90%';
     document.getElementById('progressText').textContent='กำลัง pack ZIP...';
     const zip=new JSZip();
